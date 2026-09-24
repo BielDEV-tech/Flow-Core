@@ -470,3 +470,5 @@ A definição de uma licença específica poderá ser adicionada posteriormente 
 **Flow Core — MVP em desenvolvimento**
 
 A aplicação já possui uma base funcional de frontend, backend, autenticação, produtos, avaliações e gerenciamento administrativo, servindo como ponto de partida para futuras versões do sistema.
+
+Projeto versionado com Git e GitHub.
