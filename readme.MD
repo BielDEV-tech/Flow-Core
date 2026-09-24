@@ -472,3 +472,7 @@ A definição de uma licença específica poderá ser adicionada posteriormente 
 A aplicação já possui uma base funcional de frontend, backend, autenticação, produtos, avaliações e gerenciamento administrativo, servindo como ponto de partida para futuras versões do sistema.
 
 Projeto versionado com Git e GitHub.
+
+## Teste de branch
+
+Alteração feita na branch teste.
