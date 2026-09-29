@@ -15,7 +15,7 @@ async function login() {
     try {
 
         const resposta = await fetch(
-            "http://127.0.0.1:8000/login_usuario",
+            "https://flow-core-s5ik.onrender.com/login_usuario",
             {
                 method: "POST",
 
@@ -78,6 +78,6 @@ async function login() {
 
 function irParaCadastro() {
 
-    window.location.href = "cadastro.html"
+    window.location.href = "front-end-login.html"
 
 }
