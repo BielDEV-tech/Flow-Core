@@ -1,55 +1,39 @@
+
+import os
+from contextlib import contextmanager
+
+import psycopg
 from pydantic import BaseModel
-
-import sqlite3 as sql
-
 from fastapi import FastAPI, Depends, HTTPException
-
-from fastapi.security import HTTPBearer, OAuth2PasswordRequestForm
-
-from auth import verificar_token, criar_hash, verificar_senha, token_api
-
-import bcrypt
-
+from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
+
+from auth import (
+    verificar_token,
+    criar_hash,
+    verificar_senha,
+    token_api
+)
+
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "A variável de ambiente DATABASE_URL não foi configurada."
+    )
+
+
+@contextmanager
+def bancodados():
+    with psycopg.connect(DATABASE_URL) as conexao:
+        with conexao.cursor() as cursor:
+            yield cursor
 
 
 oauth2_scheme = HTTPBearer()
 
-
-def usuario_atual(token=Depends(oauth2_scheme)):
-
-    token = token.credentials.strip().strip('"')
-
-    dados = verificar_token(token)
-
-    if dados is None:
-        raise HTTPException(
-            status_code=401,
-            detail="token invalido ou expirado"
-        )
-
-    return dados
-
-
-def bancodados():
-
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute("""CREATE TABLE IF NOT EXISTS avaliacoesFLOW (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        usuario_id INTEGER NOT NULL,
-        nota INTEGER NOT NULL,
-        comentario TEXT NOT NULL
-    )""")
-
-    conexao.commit()
-    conexao.close()
-
-
 flow = FastAPI()
-
 
 flow.add_middleware(
     CORSMiddleware,
@@ -64,8 +48,20 @@ flow.add_middleware(
 )
 
 
-class postUser(BaseModel):
+def usuario_atual(token=Depends(oauth2_scheme)):
+    token = token.credentials.strip().strip('"')
+    dados = verificar_token(token)
 
+    if dados is None:
+        raise HTTPException(
+            status_code=401,
+            detail="token invalido ou expirado"
+        )
+
+    return dados
+
+
+class postUser(BaseModel):
     nome: str
     idade: str
     cpf: str
@@ -74,13 +70,11 @@ class postUser(BaseModel):
 
 
 class Login(BaseModel):
-
     cpf: str
     senha: str
 
 
 class produtos(BaseModel):
-
     id: int
     nome: str
     preco: str
@@ -92,7 +86,6 @@ class produtos(BaseModel):
 
 
 class criar(BaseModel):
-
     nome: str
     senha: str
     cpf: str
@@ -100,21 +93,18 @@ class criar(BaseModel):
 
 
 class AtualizarCliente(BaseModel):
-
     nome: str
     cpf: str
     email: str
 
 
 class Avaliacao(BaseModel):
-
     nota: int
     comentario: str
 
 
 @flow.get("/")
 def home():
-
     return {
         "mensagem": "Ola!, sou a flow api e estou feliz em ajudar!"
     }
@@ -125,47 +115,32 @@ def post_User(
     usuario: postUser,
     security=Depends(usuario_atual)
 ):
-
     role = security["role"]
 
-    print("PRODUTO RECEBIDO PELO FASTAPI:")
-    print(produto)
-
     if role not in ("admin", "moderador", "funcionario"):
-
-        raise HTTPException(
-            status_code=403,
-            detail="sem permissao"
-        )
+        raise HTTPException(status_code=403, detail="sem permissao")
 
     usuario_id = security["sub"]
-
     senha_hash = criar_hash(usuario.senha)
 
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute("""
-        INSERT INTO dadosFLOW
-        (nome, idade, cpf, assinatura, senha)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        usuario.nome,
-        usuario.idade,
-        usuario.cpf,
-        usuario.assinatura,
-        senha_hash
-    ))
-
-    conexao.commit()
-
-    dados = cursor.lastrowid
-
-    conexao.close()
+    with bancodados() as cursor:
+        cursor.execute("""
+            INSERT INTO dadosflow
+                (nome, idade, cpf, assinatura, senha, role)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            usuario.nome,
+            usuario.idade,
+            usuario.cpf,
+            usuario.assinatura,
+            senha_hash,
+            "funcionario"
+        ))
+        novo_id = cursor.fetchone()[0]
 
     return {
-        "id": dados,
+        "id": novo_id,
         "nome": usuario.nome,
         "idade": usuario.idade,
         "cpf": usuario.cpf,
@@ -174,40 +149,17 @@ def post_User(
     }
 
 
-    if dados is None:
-
-        raise HTTPException(
-            status_code=404,
-            detail="faça login para seguir com a acao"
-        )
-
-
 @flow.get("/usuario")
-def cliente_id(
-    usuario=Depends(usuario_atual)
-):
-
-    usuario_id = usuario["sub"]
-
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute(
-        "SELECT id, nome, idade, cpf, assinatura FROM dadosFLOW WHERE id = ?",
-        (usuario_id,)
-    )
-
-    dados = cursor.fetchone()
-
-    conexao.close()
+def cliente_id(usuario=Depends(usuario_atual)):
+    with bancodados() as cursor:
+        cursor.execute("""
+            SELECT id, nome, idade, cpf, assinatura
+            FROM dadosflow WHERE id = %s
+        """, (usuario["sub"],))
+        dados = cursor.fetchone()
 
     if dados is None:
-
-        raise HTTPException(
-            status_code=404,
-            detail="usuario nao encontrado"
-        )
+        raise HTTPException(status_code=404, detail="usuario nao encontrado")
 
     return {
         "id": dados[0],
@@ -219,33 +171,16 @@ def cliente_id(
 
 
 @flow.get("/assinatura")
-def buscar_assinatura(
-    usuario=Depends(usuario_atual)
-):
-
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    usuario_id = usuario["sub"]
-
-    cursor.execute(
-        """SELECT id, nome, idade, assinatura
-        FROM dadosFLOW
-        WHERE id = ?""",
-        (usuario_id,)
-    )
-
-    mensalidade = cursor.fetchone()
-
-    conexao.close()
+def buscar_assinatura(usuario=Depends(usuario_atual)):
+    with bancodados() as cursor:
+        cursor.execute("""
+            SELECT id, nome, idade, assinatura
+            FROM dadosflow WHERE id = %s
+        """, (usuario["sub"],))
+        mensalidade = cursor.fetchone()
 
     if mensalidade is None:
-
-        raise HTTPException(
-            status_code=404,
-            detail="plano nao encontrado"
-        )
+        raise HTTPException(status_code=404, detail="plano nao encontrado")
 
     return {
         "id": mensalidade[0],
@@ -261,44 +196,23 @@ def atualizar_cliente(
     clientes: AtualizarCliente,
     usuario=Depends(usuario_atual)
 ):
+    if usuario["role"] not in ("admin", "moderador", "funcionario"):
+        raise HTTPException(status_code=403, detail="sem permissao")
 
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    role = usuario["role"]
-
-    if role not in ("admin", "moderador", "funcionario"):
-
-        raise HTTPException(
-            status_code=403,
-            detail="sem permissao"
-        )
-
-    cursor.execute(
-        "UPDATE clientesFLOW SET nome = ?, cpf = ?, email = ? WHERE id = ?",
-        (
+    with bancodados() as cursor:
+        cursor.execute("""
+            UPDATE clientesflow
+            SET nome = %s, cpf = %s, email = %s
+            WHERE id = %s
+        """, (
             clientes.nome,
             clientes.cpf,
             clientes.email,
             cliente_id
-        )
-    )
+        ))
 
-    conexao.commit()
-
-    if cursor.rowcount == 0:
-
-        conexao.close()
-
-        raise HTTPException(
-            status_code=404,
-            detail="cliente nao encontrado"
-        )
-
-    conexao.commit()
-
-    conexao.close()
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="cliente nao encontrado")
 
     return {
         "mensagem": "cliente atualizado",
@@ -308,31 +222,16 @@ def atualizar_cliente(
 
 
 @flow.get("/perfil")
-def perfil(
-    usuario=Depends(usuario_atual)
-):
-
-    usuario_id = usuario["sub"]
-
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute(
-        "SELECT id, nome, idade, cpf, assinatura FROM dadosFLOW WHERE id = ?",
-        (usuario_id,)
-    )
-
-    dados = cursor.fetchone()
-
-    conexao.close()
+def perfil(usuario=Depends(usuario_atual)):
+    with bancodados() as cursor:
+        cursor.execute("""
+            SELECT id, nome, idade, cpf, assinatura
+            FROM dadosflow WHERE id = %s
+        """, (usuario["sub"],))
+        dados = cursor.fetchone()
 
     if dados is None:
-
-        raise HTTPException(
-            status_code=404,
-            detail="usuario nao encontrado"
-        )
+        raise HTTPException(status_code=404, detail="usuario nao encontrado")
 
     return {
         "id": dados[0],
@@ -345,47 +244,20 @@ def perfil(
 
 @flow.post("/login")
 def login_adm(usuario: Login):
+    with bancodados() as cursor:
+        cursor.execute("""
+            SELECT id, idade, cpf, senha, role
+            FROM dadosflow WHERE cpf = %s
+        """, (usuario.cpf,))
+        dados = cursor.fetchone()
 
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute("""
-    SELECT id, idade, cpf, senha, role
-    FROM dadosFLOW
-    WHERE cpf = ?
-    """, (usuario.cpf,))
-
-    dados = cursor.fetchone()
-
-    if dados is None:
-
-        conexao.close()
-
+    if dados is None or not verificar_senha(usuario.senha, dados[3]):
         raise HTTPException(
             status_code=401,
             detail="CPF ou Senha Invalidos"
         )
 
-    usuario_id = dados[0]
-    senha_hash = dados[3]
-    role = dados[4]
-
-    senha_correta = verificar_senha(
-        usuario.senha,
-        senha_hash
-    )
-
-    if not senha_correta:
-
-        conexao.close()
-
-        raise HTTPException(
-            status_code=401,
-            detail="CPF ou Senha Invalidos"
-        )
-
-    token = token_api(usuario_id, role)
+    token = token_api(dados[0], dados[4])
 
     return {
         "access_token": token,
@@ -394,18 +266,11 @@ def login_adm(usuario: Login):
 
 
 @flow.get("/responsavel")
-def privada(
-    usuario=Depends(usuario_atual)
-):
-
+def privada(usuario=Depends(usuario_atual)):
     role = usuario["role"]
 
     if role not in ("admin", "moderador", "funcionario"):
-
-        raise HTTPException(
-            status_code=403,
-            detail="sem permissao"
-        )
+        raise HTTPException(status_code=403, detail="sem permissao")
 
     return {
         "mensgem": "acesso permitido",
@@ -414,18 +279,9 @@ def privada(
 
 
 @flow.get("/usuario_comum")
-def comum(
-    usuario=Depends(usuario_atual)
-):
-
-    role = usuario["role"]
-
-    if role != "usuario":
-
-        raise HTTPException(
-            status_code=403,
-            detail="sem permissao"
-        )
+def comum(usuario=Depends(usuario_atual)):
+    if usuario["role"] != "usuario":
+        raise HTTPException(status_code=403, detail="sem permissao")
 
     return {
         "mensagem": "usuario conctado",
@@ -438,47 +294,33 @@ def postproduto(
     produto: produtos,
     usuario=Depends(usuario_atual)
 ):
-
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
     log = usuario["sub"]
 
-    role = usuario["role"]
-
-    if role not in ("admin", "moderador", "funcionario"):
-
-        raise HTTPException(
-            status_code=403,
-            detail="sem permissao"
-        )
+    if usuario["role"] not in ("admin", "moderador", "funcionario"):
+        raise HTTPException(status_code=403, detail="sem permissao")
 
     if log is None:
-
         raise HTTPException(
             status_code=404,
             detail="faca login para entrar na pagina"
         )
 
-    cursor.execute("""
-        INSERT INTO produtosFLOW
-        (id, nome, preco, descrisao, validade, incluso, mensalidade, video)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        produto.id,
-        produto.nome,
-        produto.preco,
-        produto.descrisao,
-        produto.validade,
-        produto.incluso,
-        produto.mensalidade,
-        produto.video
-    ))
-
-    conexao.commit()
-
-    conexao.close()
+    with bancodados() as cursor:
+        cursor.execute("""
+            INSERT INTO produtosflow
+                (id, nome, preco, descrisao, validade,
+                 incluso, mensalidade, video)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            produto.id,
+            produto.nome,
+            produto.preco,
+            produto.descrisao,
+            produto.validade,
+            produto.incluso,
+            produto.mensalidade,
+            produto.video
+        ))
 
     return {
         "id": produto.id,
@@ -494,16 +336,11 @@ def postproduto(
 
 
 @flow.get("/moderadores")
-def moderador(
-    usuario=Depends(usuario_atual)
-):
-
+def moderador(usuario=Depends(usuario_atual)):
     log = usuario["sub"]
-
     role = usuario["role"]
 
     if role not in ("admin", "moderador"):
-
         raise HTTPException(
             status_code=403,
             detail="sem permisssao para essa funçao"
@@ -517,33 +354,21 @@ def moderador(
 
 @flow.post("/criar_user")
 def criar_user(login: criar):
-
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
     senha_hash = criar_hash(login.senha)
 
-    cursor.execute(
-        """
-        INSERT INTO clientesFLOW
-        (nome, senha, cpf, email, role)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
+    with bancodados() as cursor:
+        cursor.execute("""
+            INSERT INTO clientesflow (nome, senha, cpf, email, role)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
             login.nome,
             senha_hash,
             login.cpf,
             login.email,
             "usuario"
-        )
-    )
-
-    conexao.commit()
-
-    novo_id = cursor.lastrowid
-
-    conexao.close()
+        ))
+        novo_id = cursor.fetchone()[0]
 
     return {
         "nome": login.nome,
@@ -553,31 +378,21 @@ def criar_user(login: criar):
 
 
 @flow.get("/funcionario_empregado")
-def empregado(
-    usuario=Depends(usuario_atual)
-):
-
+def empregado(usuario=Depends(usuario_atual)):
     sub = usuario["sub"]
 
-    role = usuario["role"]
+    if usuario["role"] != "admin":
+        raise HTTPException(status_code=403, detail="sem permissao")
 
-    conexao = sql.connect("/app/data/flow.db")
+    with bancodados() as cursor:
+        cursor.execute("""
+            SELECT id, nome, idade, cpf, role
+            FROM dadosflow WHERE id = %s
+        """, (sub,))
+        dados = cursor.fetchone()
 
-    cursor = conexao.cursor()
-
-    if role != "admin":
-
-        raise HTTPException(
-            status_code=403,
-            detail="sem permissao"
-        )
-
-    cursor.execute(
-        "SELECT id, nome, idade, cpf, role FROM dadosFLOW WHERE id = ?",
-        (sub,)
-    )
-
-    dados = cursor.fetchone()
+    if dados is None:
+        raise HTTPException(status_code=404, detail="usuario nao encontrado")
 
     return {
         "id": dados[0],
@@ -590,52 +405,20 @@ def empregado(
 
 @flow.post("/login_usuario")
 def login_usuario(login: criar):
+    with bancodados() as cursor:
+        cursor.execute("""
+            SELECT id, senha, role
+            FROM clientesflow WHERE cpf = %s
+        """, (login.cpf,))
+        dados = cursor.fetchone()
 
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute(
-        """
-        SELECT id, senha, role
-        FROM clientesFLOW
-        WHERE cpf = ?
-        """,
-        (login.cpf,)
-    )
-
-    dados = cursor.fetchone()
-
-    if dados is None:
-
+    if dados is None or not verificar_senha(login.senha, dados[1]):
         raise HTTPException(
             status_code=401,
             detail="cpf ou senha invalidos"
         )
 
-    usuario_id = dados[0]
-
-    senha_hash = dados[1]
-
-    role = dados[2]
-
-    senha_correta = verificar_senha(
-        login.senha,
-        senha_hash
-    )
-
-    if not senha_correta:
-
-        conexao.close()
-
-        raise HTTPException(
-            status_code=401,
-            detail="cpf ou senha invalidos"
-        )
-
-    token = token_api(usuario_id, role)
-
-    conexao.close()
+    token = token_api(dados[0], dados[2])
 
     return {
         "chave de acesso": token,
@@ -645,36 +428,28 @@ def login_usuario(login: criar):
 
 @flow.get("/produtos")
 def produto():
+    with bancodados() as cursor:
+        cursor.execute("""
+            SELECT id, nome, preco, descrisao, validade,
+                   incluso, mensalidade, video
+            FROM produtosflow
+            ORDER BY id
+        """)
+        produtos_lista = cursor.fetchall()
 
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute("""
-        SELECT id, nome, preco, descrisao, validade, incluso, mensalidade, video
-        FROM produtosFLOW
-    """)
-
-    produtos = cursor.fetchall()
-
-    conexao.close()
-
-    lista_produtos = []
-
-    for produto in produtos:
-
-        lista_produtos.append({
-            "id": produto[0],
-            "nome": produto[1],
-            "preco": produto[2],
-            "descrisao": produto[3],
-            "validade": produto[4],
-            "incluso": produto[5],
-            "mensalidade": produto[6],
-            "video": produto[7]
-        })
-
-    return lista_produtos
+    return [
+        {
+            "id": item[0],
+            "nome": item[1],
+            "preco": item[2],
+            "descrisao": item[3],
+            "validade": item[4],
+            "incluso": item[5],
+            "mensalidade": item[6],
+            "video": item[7]
+        }
+        for item in produtos_lista
+    ]
 
 
 @flow.post("/avaliacoes")
@@ -682,79 +457,51 @@ def criar_avaliacao(
     avaliacao: Avaliacao,
     usuario=Depends(usuario_atual)
 ):
-
     if usuario["role"] != "usuario":
-
         raise HTTPException(
             status_code=403,
             detail="Apenas clientes podem fazer avaliações"
         )
 
-    if avaliacao.nota < 1 or avaliacao.nota > 5:
-
+    if not 1 <= avaliacao.nota <= 5:
         raise HTTPException(
             status_code=400,
             detail="A nota deve ser entre 1 e 5"
         )
 
-    conexao = sql.connect("/app/data/flow.db")
+    with bancodados() as cursor:
+        cursor.execute("""
+            INSERT INTO avaliacoesflow (usuario_id, nota, comentario)
+            VALUES (%s, %s, %s)
+        """, (
+            usuario["sub"],
+            avaliacao.nota,
+            avaliacao.comentario
+        ))
 
-    cursor = conexao.cursor()
-
-    cursor.execute("""
-        INSERT INTO avaliacoesFLOW
-        (usuario_id, nota, comentario)
-        VALUES (?, ?, ?)
-    """, (
-        usuario["sub"],
-        avaliacao.nota,
-        avaliacao.comentario
-    ))
-
-    conexao.commit()
-
-    conexao.close()
-
-    return {
-        "mensagem": "Avaliação enviada com sucesso"
-    }
+    return {"mensagem": "Avaliação enviada com sucesso"}
 
 
 @flow.get("/avaliacoes")
 def listar_avaliacoes():
+    with bancodados() as cursor:
+        cursor.execute("""
+            SELECT a.id, c.nome, a.nota, a.comentario
+            FROM avaliacoesflow AS a
+            INNER JOIN clientesflow AS c ON a.usuario_id = c.id
+            ORDER BY a.id DESC
+        """)
+        avaliacoes = cursor.fetchall()
 
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute("""
-        SELECT
-            avaliacoesFLOW.id,
-            clientesFLOW.nome,
-            avaliacoesFLOW.nota,
-            avaliacoesFLOW.comentario
-        FROM avaliacoesFLOW
-        INNER JOIN clientesFLOW
-        ON avaliacoesFLOW.usuario_id = clientesFLOW.id
-        ORDER BY avaliacoesFLOW.id DESC
-    """)
-
-    avaliacoes = cursor.fetchall()
-
-    conexao.close()
-
-    lista = []
-
-    for avaliacao in avaliacoes:
-
-        lista.append({
-            "id": avaliacao[0],
-            "nome": avaliacao[1],
-            "nota": avaliacao[2],
-            "comentario": avaliacao[3]
-        })
-
-    return lista
+    return [
+        {
+            "id": item[0],
+            "nome": item[1],
+            "nota": item[2],
+            "comentario": item[3]
+        }
+        for item in avaliacoes
+    ]
 
 
 @flow.delete("/avaliacoes/{avaliacao_id}")
@@ -762,41 +509,23 @@ def apagar_avaliacao(
     avaliacao_id: int,
     usuario=Depends(usuario_atual)
 ):
+    if usuario["role"] not in ("admin", "moderador", "funcionario"):
+        raise HTTPException(status_code=403, detail="sem permissao")
 
-    role = usuario["role"]
-
-    if role not in ("admin", "moderador", "funcionario"):
-
-        raise HTTPException(
-            status_code=403,
-            detail="sem permissao"
+    with bancodados() as cursor:
+        cursor.execute(
+            "DELETE FROM avaliacoesflow WHERE id = %s",
+            (avaliacao_id,)
         )
-
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute(
-        "DELETE FROM avaliacoesFLOW WHERE id = ?",
-        (avaliacao_id,)
-    )
-
-    conexao.commit()
-
-    apagou = cursor.rowcount
-
-    conexao.close()
+        apagou = cursor.rowcount
 
     if apagou == 0:
-
         raise HTTPException(
             status_code=404,
             detail="avaliacao nao encontrada"
         )
 
-    return {
-        "mensagem": "Avaliacao apagada com sucesso"
-    }
+    return {"mensagem": "Avaliacao apagada com sucesso"}
 
 
 @flow.delete("/produtos/{produto_id}")
@@ -804,38 +533,20 @@ def apagar_produto(
     produto_id: int,
     usuario=Depends(usuario_atual)
 ):
+    if usuario["role"] not in ("admin", "moderador", "funcionario"):
+        raise HTTPException(status_code=403, detail="sem permissao")
 
-    role = usuario["role"]
-
-    if role not in ("admin", "moderador", "funcionario"):
-
-        raise HTTPException(
-            status_code=403,
-            detail="sem permissao"
+    with bancodados() as cursor:
+        cursor.execute(
+            "DELETE FROM produtosflow WHERE id = %s",
+            (produto_id,)
         )
-
-    conexao = sql.connect("/app/data/flow.db")
-
-    cursor = conexao.cursor()
-
-    cursor.execute(
-        "DELETE FROM produtosFLOW WHERE id = ?",
-        (produto_id,)
-    )
-
-    conexao.commit()
-
-    apagou = cursor.rowcount
-
-    conexao.close()
+        apagou = cursor.rowcount
 
     if apagou == 0:
-
         raise HTTPException(
             status_code=404,
             detail="produto nao encontrado"
         )
 
-    return {
-        "mensagem": "Produto apagado com sucesso"
-    }
+    return {"mensagem": "Produto apagado com sucesso"}
