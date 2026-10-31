@@ -15,7 +15,7 @@ async function login() {
     try {
 
         const resposta = await fetch(
-            "https://flow-core-s5ik.onrender.com/login_usuario",
+            "https://flow-core-api.onrender.com/login_usuario",
             {
                 method: "POST",
 
@@ -43,10 +43,25 @@ async function login() {
         }
 
         // Salva o token do cliente
+        
+        
+        // Salva o token do cliente separadamente do token administrativo
+        const tokenUsuario =
+            dados["chave de acesso"] ??
+            dados.access_token;
+
+        if (!tokenUsuario) {
+            mensagem.textContent =
+                "O servidor não retornou o token de acesso.";
+
+            return;
+        }
+
         localStorage.setItem(
-            "token",
-            dados["chave de acesso"]
-        )
+            "token_usuario",
+            tokenUsuario
+        );
+
 
         /*
         Verifica se o usuário veio

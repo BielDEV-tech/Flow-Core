@@ -1,4 +1,3 @@
-
 import os
 from contextlib import contextmanager
 
@@ -289,52 +288,6 @@ def comum(usuario=Depends(usuario_atual)):
     }
 
 
-@flow.post("/postar_produto")
-def postproduto(
-    produto: produtos,
-    usuario=Depends(usuario_atual)
-):
-    log = usuario["sub"]
-
-    if usuario["role"] not in ("admin", "moderador", "funcionario"):
-        raise HTTPException(status_code=403, detail="sem permissao")
-
-    if log is None:
-        raise HTTPException(
-            status_code=404,
-            detail="faca login para entrar na pagina"
-        )
-
-    with bancodados() as cursor:
-        cursor.execute("""
-            INSERT INTO produtosflow
-                (id, nome, preco, descrisao, validade,
-                 incluso, mensalidade, video)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            produto.id,
-            produto.nome,
-            produto.preco,
-            produto.descrisao,
-            produto.validade,
-            produto.incluso,
-            produto.mensalidade,
-            produto.video
-        ))
-
-    return {
-        "id": produto.id,
-        "nome": produto.nome,
-        "preco": produto.preco,
-        "descrisao": produto.descrisao,
-        "validade": produto.validade,
-        "incluso": produto.incluso,
-        "mensalidade": produto.mensalidade,
-        "Video": produto.video,
-        "criado por": log
-    }
-
-
 @flow.get("/moderadores")
 def moderador(usuario=Depends(usuario_atual)):
     log = usuario["sub"]
@@ -403,12 +356,13 @@ def empregado(usuario=Depends(usuario_atual)):
     }
 
 
+
 @flow.post("/login_usuario")
 def login_usuario(login: criar):
     with bancodados() as cursor:
         cursor.execute("""
             SELECT id, senha, role
-            FROM clientesflow WHERE cpf = %s
+            FROM dadosflow WHERE cpf = %s
         """, (login.cpf,))
         dados = cursor.fetchone()
 
@@ -421,8 +375,8 @@ def login_usuario(login: criar):
     token = token_api(dados[0], dados[2])
 
     return {
-        "chave de acesso": token,
-        "token type": "bearer"
+        "access_token": token,
+        "token_type": "bearer"
     }
 
 
@@ -480,7 +434,6 @@ def criar_avaliacao(
         ))
 
     return {"mensagem": "Avaliação enviada com sucesso"}
-
 
 @flow.get("/avaliacoes")
 def listar_avaliacoes():
